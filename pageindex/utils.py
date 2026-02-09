@@ -18,7 +18,61 @@ from pathlib import Path
 from types import SimpleNamespace as config
 import re
 CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
+import re
 
+def extract_function_code_from_title(title):
+    """
+    Extract TES-xxx code from title and format it properly.
+    Examples:
+        "Verifica esito MFT su flusso ingresso" -> "Verifica esito MFT su flusso ingresso"
+        "[TES-310] - Verifica esito MFT" -> "[TES-310] Verifica esito MFT"
+        "5.2.4.2 [TES-310] - Verifica esito" -> "[TES-310] Verifica esito"
+    """
+    if not title:
+        return title
+    
+    # Pattern to find TES-xxx codes
+    tes_pattern = r'\[?(TES-\d+)\]?'
+    match = re.search(tes_pattern, title)
+    
+    if match:
+        tes_code = match.group(1)
+        # Remove section numbers like "5.2.4.2"
+        clean_title = re.sub(r'^\d+(\.\d+)*\s*', '', title)
+        # Remove the TES code and surrounding brackets/dashes
+        clean_title = re.sub(r'\[?TES-\d+\]?\s*[-–—]?\s*', '', clean_title)
+        # Format as [TES-xxx] Title
+        return f"[{tes_code}] {clean_title.strip()}"
+    
+    return title
+
+
+def extract_all_tes_references(text):
+    """
+    Extract all TES-xxx references from text for cross-reference tracking.
+    Returns list of unique TES codes found.
+    """
+    if not text:
+        return []
+    pattern = r'TES-\d+'
+    matches = re.findall(pattern, text)
+    return list(set(matches))
+
+
+def extract_table_references(text):
+    """
+    Extract database table names from text.
+    Looks for patterns like TABLE_NAME, A_TRAMITI, RAW_FLUSSI_IN, etc.
+    """
+    if not text:
+        return []
+    # Common patterns: UPPER_CASE_WITH_UNDERSCORES, or prefixed with A_, T_, etc.
+    pattern = r'\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b'
+    matches = re.findall(pattern, text)
+    # Filter out common false positives
+    exclude = {'ID_', 'XML_', 'JSON_', 'HTTP_', 'API_', 'URL_'}
+    filtered = [m for m in matches if not any(m.startswith(e) for e in exclude)]
+    return list(set(filtered))
 def count_tokens(text, model=None):
     if not text:
         return 0
@@ -468,6 +522,8 @@ def post_processing(structure, end_physical_index):
     # First convert page_number to start_index in flat list
     for i, item in enumerate(structure):
         item['start_index'] = item.get('physical_index')
+        if 'title' in item:
+            item['title'] = extract_function_code_from_title(item['title'])
         if i < len(structure) - 1:
             if structure[i + 1].get('appear_start') == 'yes':
                 item['end_index'] = structure[i + 1]['physical_index']-1
@@ -612,155 +668,93 @@ def add_node_text_with_labels(node, pdf_pages):
 async def generate_node_summary(node, model=None):
     """
     Generate detailed summary optimized for Function Point Analysis.
-    Auto-detects if content is a functionality or table and formats accordingly.
-    Tracks token usage with tiktoken.
+    Extracts TES-xxx codes, cross-references, tables, inputs/outputs.
     """
-    prompt = f"""You are analyzing a functional specification document for Function Point Analysis (FPA) counting preparation.
+    prompt = f"""You are analyzing a functional specification document for Function Point Analysis (FPA).
 
-Your task: Create an EXTREMELY DETAILED summary preserving ALL information needed for precise FPA counting later.
+TASK: Extract ALL technical details needed for FPA counting (DET, RET, EQ, EI, EO, ILF, EIF).
 
-CRITICAL INSTRUCTIONS:
-1. Auto-detect if this section describes a FUNCTIONALITY, TABLE/DATA STRUCTURE, or BOTH
-2. Preserve EXACT names, IDs, codes, and cross-references as written in the document
-3. Include ALL fields, parameters, validations, and relationships
-4. If the section references other functionalities/services/tables, preserve the EXACT reference format
+CRITICAL RULES:
+1. Preserve EXACT function codes (TES-xxx, [TES-xxx]) - these are PRIMARY identifiers
+2. Preserve ALL field names exactly as written (Italian or English)
+3. Capture ALL cross-references to other functions (e.g., "cfr. TES-233", "TES-400 punto A")
+4. List ALL database tables mentioned in "Accesso al db" or referenced in text
+5. Keep original language - do NOT translate Italian to English
+6. Extract EVERY input/output field with data types if mentioned
 
----
+OUTPUT FORMAT (use this exact structure):
 
-## OUTPUT FORMAT:
+### FUNCTION IDENTIFICATION
+- **Code**: [exact TES-xxx code, e.g., TES-310]
+- **Title**: [exact title in original language]
+- **Type**: [OnLine/Batch/API/Report/etc.]
+- **Activation**: [trigger - topic, API call, scheduled, user action]
+- **RU Reference**: [if mentioned, e.g., ACQ-002]
 
-### [SECTION TYPE: Functionality | Table | Both]
+### INPUT FIELDS
+List EVERY input field:
+| Field Name | Source | Data Type | Notes |
+|------------|--------|-----------|-------|
+| [exact name] | [message/API/form/etc.] | [if known] | [validation rules] |
 
----
+### PROCESSING LOGIC
+Numbered steps exactly as in document:
+1. [Step description with exact field names]
+2. [Step description]
+...
+Include ALL:
+- Validation checks
+- Conditional branches (if/else logic)
+- State transitions (e.g., STATO = "RICEVUTO" → "DA_VERIFICARE")
+- Calculations or transformations
 
-**IF FUNCTIONALITY:**
+### OUTPUT FIELDS
+| Field Name | Destination | Data Type | Derivation |
+|------------|-------------|-----------|------------|
+| [exact name] | [topic/file/table/etc.] | [if known] | [how computed] |
 
-**Function Identification:**
-- Function Name/ID: [exact name/code from document, e.g., TES202]
-- Purpose: [detailed description]
-- Category: [if mentioned - e.g., data entry, report generation, inquiry, calculation]
+### DATABASE ACCESS
+Tables READ:
+- [TABLE_NAME]: [what data is read, which columns]
 
-**Input Specifications:**
-For EVERY input field/parameter mentioned:
-- Field Name: [exact name]
-- Data Type: [exact type - string, integer, decimal, date, boolean, etc.]
-- Length/Size: [if specified]
-- Required/Optional: [if specified]
-- Validation Rules: [ALL constraints - format, range, allowed values, regex patterns]
-- Default Value: [if any]
-- Source: [where it comes from - user input, API parameter, database, external system]
+Tables WRITTEN:
+- [TABLE_NAME]: [what operations - INSERT/UPDATE, which columns]
 
-**Processing Logic:**
-- Business Rules: [ALL rules applied, decision logic, conditions]
-- Calculations/Derivations: [formulas, transformations, aggregations]
-- Data Operations: [what data is created/read/updated/deleted]
-- Validations Performed: [ALL validation checks]
-- Error Handling: [error conditions and responses]
+### CROSS-REFERENCES (CRITICAL FOR FPA)
+Functions called/referenced:
+- TES-xxx: [context of reference]
+- TES-yyy (cfr. punto X): [context]
 
-**Output Specifications:**
-For EVERY output field mentioned:
-- Field Name: [exact name]
-- Data Type: [exact type]
-- Derivation: [how it's calculated/populated]
-- Destination: [screen display, API response, file, database, external system]
+Tables referenced:
+- [TABLE_NAME]: [relationship]
 
-**Data Access:**
-- Tables/Files Read: [exact table/file names]
-- Tables/Files Written: [exact table/file names]
-- Queries/Operations: [type of database operations]
+### ERROR HANDLING
+| Error Code | Description | Handling |
+|------------|-------------|----------|
+| [E0, E2, etc.] | [description] | [what happens] |
 
-**Dependencies & Cross-References:**
-- Referenced Functions: [EXACT IDs/names as written - e.g., "calls TES401", "depends on User Authentication Module"]
-- Referenced Tables: [exact table names accessed]
-- External Systems: [APIs, services, third-party systems]
-- Relationship Description: [how it interacts with referenced components]
-
-**Transaction Characteristics:**
-- Trigger: [what initiates it - user action, API call, scheduled job, event]
-- Frequency: [if mentioned - real-time, batch, on-demand]
-- Users/Roles: [who can execute this]
-
----
-
-**IF TABLE/DATA STRUCTURE:**
-
-**Table Identification:**
-- Table Name: [exact name]
-- Entity Type: [master data, transaction data, reference data, etc.]
-- Maintained By: [this application, external system, manual entry, etc.]
-- Purpose: [what this table stores]
-
-**Column Specifications:**
-For EVERY column:
-- Column Name: [exact name]
-- Data Type: [exact type with precision - VARCHAR(50), DECIMAL(10,2), INT, DATE, etc.]
-- Constraints: [PRIMARY KEY, FOREIGN KEY, NOT NULL, UNIQUE, CHECK constraints]
-- Default Value: [if any]
-- Description: [what this column represents]
-
-**Relationships:**
-For EVERY relationship:
-- Related Table: [exact table name]
-- Relationship Type: [one-to-one, one-to-many, many-to-many]
-- Foreign Key: [column name in this table]
-- Referenced Key: [column name in related table]
-- Cascade Rules: [ON DELETE, ON UPDATE behavior if specified]
-
-**Indexes:**
-- Primary Key: [columns]
-- Foreign Keys: [columns and referenced tables]
-- Indexes: [any other indexes mentioned]
-
-**Business Rules:**
-- Validation Rules: [constraints on data values]
-- Calculation Rules: [derived/computed columns]
-- Lifecycle: [when records are created/updated/archive]
-
-**Usage/Dependencies:**
-- Functionalities that READ this table: [EXACT function names/IDs]
-- Functionalities that WRITE to this table: [EXACT function names/IDs]
-- Referenced By: [other tables with foreign keys to this table]
-- References: [tables this table has foreign keys to]
+### MESSAGES/TOPICS
+- Input Topic: [topic name]
+- Output Topic(s): [topic names with conditions]
 
 ---
 
-**PRESERVE EXACTLY:**
-- All function/table IDs and codes (e.g., TES202, UC-401, TB_USER)
-- All cross-references in their original format
-- All field names exactly as written
-- All data types with precision
-- All validation rules and constraints
-- All relationship descriptions
-
-**DO NOT:**
-- Summarize or omit any fields
-- Paraphrase technical terms
-- Skip validation rules or constraints
-- Generalize specific references
-
-Partial Document Text:
+DOCUMENT TEXT TO ANALYZE:
 {node['text']}
 
-Generate the detailed technical summary now:"""
+---
+Generate the detailed extraction now. If a section has no data, write "N/A".
+Do NOT summarize or omit any fields - list EVERYTHING for accurate FPA counting."""
 
-    # Count input tokens
     input_tokens = count_tokens(prompt, model)
-    
-    # Make API call
     response = await ChatGPT_API_async(model, prompt)
-    
-    # Count output tokens
     output_tokens = count_tokens(response, model)
     
-    # Store token counts in node
     node['token_usage'] = {
         'input_tokens': input_tokens,
         'output_tokens': output_tokens,
         'total_tokens': input_tokens + output_tokens
     }
-    
-    # Log token usage
-    #print(f"[Token Usage] Node: {node.get('title', 'Unknown')} | Input: {input_tokens} | Output: {output_tokens} | Total: {input_tokens + output_tokens}")
     
     return response
 
@@ -781,6 +775,8 @@ async def generate_summaries_for_structure(structure, model=None, max_concurrent
     
     for node, summary in zip(nodes, summaries):
         node['summary'] = summary
+        node['tes_references'] = extract_all_tes_references(node.get('text', ''))
+        node['table_references'] = extract_table_references(node.get('text', ''))
     
     # Calculate total token usage
     total_input = sum(node.get('token_usage', {}).get('input_tokens', 0) for node in nodes)

@@ -7,7 +7,7 @@ import re
 from .utils import *
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from .utils import extract_function_code_from_title, extract_all_tes_references, extract_table_references
 
 ################### check title in page #########################################################
 async def check_title_appearance(item, page_list, start_index=1, model=None):    
