@@ -155,8 +155,13 @@ def check_if_toc_transformation_is_complete(content, toc, model=None):
     prompt = prompt + '\n Raw Table of contents:\n' + content + '\n Cleaned Table of contents:\n' + toc
     response = ChatGPT_API(model=model, prompt=prompt)
     json_content = extract_json(response)
+    
+    # Handle failed JSON extraction
+    if not json_content or 'completed' not in json_content:
+        logging.error(f"Failed to get completion status from LLM. Response: {response[:200]}")
+        return 'no'  # Default to incomplete to trigger retry
+    
     return json_content['completed']
-
 def extract_toc_content(content, model=None):
     prompt = f"""
     Your job is to extract the full table of contents from the given text, replace ... with :
@@ -1077,12 +1082,37 @@ def page_index_main(doc, opt=None):
             write_node_id(structure)    
         if opt.if_add_node_text == 'yes':
             add_node_text(structure, page_list)
+        
+        # Initialize token usage variables
+        token_usage_summary = None
+        
         if opt.if_add_node_summary == 'yes':
             if opt.if_add_node_text == 'no':
                 add_node_text(structure, page_list)
-            await generate_summaries_for_structure(structure, model=opt.model)
+            
+            # Generate summaries (now returns structure with token usage)
+            structure = await generate_summaries_for_structure(structure, model=opt.model, max_concurrent=opt.max_concurrent_requests)
+            
+            # Calculate total token usage
+            nodes = structure_to_list(structure)
+            total_input = sum(node.get('token_usage', {}).get('input_tokens', 0) for node in nodes)
+            total_output = sum(node.get('token_usage', {}).get('output_tokens', 0) for node in nodes)
+            total_tokens = total_input + total_output
+            
+            token_usage_summary = {
+                'total_input_tokens': total_input,
+                'total_output_tokens': total_output,
+                'total_tokens': total_tokens,
+                'node_count': len(nodes),
+                'average_tokens_per_node': total_tokens // len(nodes) if len(nodes) > 0 else 0
+            }
+            
+            # Log token usage
+            logger.info({'token_usage_summary': token_usage_summary})
+            
             if opt.if_add_node_text == 'no':
                 remove_structure_text(structure)
+            
             if opt.if_add_doc_description == 'yes':
                 # Create a clean structure without unnecessary fields for description generation
                 clean_structure = create_clean_structure_for_description(structure)
@@ -1091,11 +1121,19 @@ def page_index_main(doc, opt=None):
                     'doc_name': get_pdf_name(doc),
                     'doc_description': doc_description,
                     'structure': structure,
+                    'token_usage_summary': token_usage_summary
                 }
-        return {
+        
+        result = {
             'doc_name': get_pdf_name(doc),
             'structure': structure,
         }
+        
+        # Add token usage summary if available
+        if token_usage_summary:
+            result['token_usage_summary'] = token_usage_summary
+            
+        return result
 
     return asyncio.run(page_index_builder())
 

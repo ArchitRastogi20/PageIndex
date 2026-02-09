@@ -16,7 +16,7 @@ import logging
 import yaml
 from pathlib import Path
 from types import SimpleNamespace as config
-
+import re
 CHATGPT_API_KEY = os.getenv("CHATGPT_API_KEY")
 
 def count_tokens(text, model=None):
@@ -603,25 +603,214 @@ def add_node_text_with_labels(node, pdf_pages):
 
 
 async def generate_node_summary(node, model=None):
-    prompt = f"""You are given a part of a document, your task is to generate a description of the partial document about what are main points covered in the partial document.
-
-    Partial Document Text: {node['text']}
-    
-    Directly return the description, do not include any other text.
     """
+    Generate detailed summary optimized for Function Point Analysis.
+    Auto-detects if content is a functionality or table and formats accordingly.
+    Tracks token usage with tiktoken.
+    """
+    prompt = f"""You are analyzing a functional specification document for Function Point Analysis (FPA) counting preparation.
+
+Your task: Create an EXTREMELY DETAILED summary preserving ALL information needed for precise FPA counting later.
+
+CRITICAL INSTRUCTIONS:
+1. Auto-detect if this section describes a FUNCTIONALITY, TABLE/DATA STRUCTURE, or BOTH
+2. Preserve EXACT names, IDs, codes, and cross-references as written in the document
+3. Include ALL fields, parameters, validations, and relationships
+4. If the section references other functionalities/services/tables, preserve the EXACT reference format
+
+---
+
+## OUTPUT FORMAT:
+
+### [SECTION TYPE: Functionality | Table | Both]
+
+---
+
+**IF FUNCTIONALITY:**
+
+**Function Identification:**
+- Function Name/ID: [exact name/code from document, e.g., TES202]
+- Purpose: [detailed description]
+- Category: [if mentioned - e.g., data entry, report generation, inquiry, calculation]
+
+**Input Specifications:**
+For EVERY input field/parameter mentioned:
+- Field Name: [exact name]
+- Data Type: [exact type - string, integer, decimal, date, boolean, etc.]
+- Length/Size: [if specified]
+- Required/Optional: [if specified]
+- Validation Rules: [ALL constraints - format, range, allowed values, regex patterns]
+- Default Value: [if any]
+- Source: [where it comes from - user input, API parameter, database, external system]
+
+**Processing Logic:**
+- Business Rules: [ALL rules applied, decision logic, conditions]
+- Calculations/Derivations: [formulas, transformations, aggregations]
+- Data Operations: [what data is created/read/updated/deleted]
+- Validations Performed: [ALL validation checks]
+- Error Handling: [error conditions and responses]
+
+**Output Specifications:**
+For EVERY output field mentioned:
+- Field Name: [exact name]
+- Data Type: [exact type]
+- Derivation: [how it's calculated/populated]
+- Destination: [screen display, API response, file, database, external system]
+
+**Data Access:**
+- Tables/Files Read: [exact table/file names]
+- Tables/Files Written: [exact table/file names]
+- Queries/Operations: [type of database operations]
+
+**Dependencies & Cross-References:**
+- Referenced Functions: [EXACT IDs/names as written - e.g., "calls TES401", "depends on User Authentication Module"]
+- Referenced Tables: [exact table names accessed]
+- External Systems: [APIs, services, third-party systems]
+- Relationship Description: [how it interacts with referenced components]
+
+**Transaction Characteristics:**
+- Trigger: [what initiates it - user action, API call, scheduled job, event]
+- Frequency: [if mentioned - real-time, batch, on-demand]
+- Users/Roles: [who can execute this]
+
+---
+
+**IF TABLE/DATA STRUCTURE:**
+
+**Table Identification:**
+- Table Name: [exact name]
+- Entity Type: [master data, transaction data, reference data, etc.]
+- Maintained By: [this application, external system, manual entry, etc.]
+- Purpose: [what this table stores]
+
+**Column Specifications:**
+For EVERY column:
+- Column Name: [exact name]
+- Data Type: [exact type with precision - VARCHAR(50), DECIMAL(10,2), INT, DATE, etc.]
+- Constraints: [PRIMARY KEY, FOREIGN KEY, NOT NULL, UNIQUE, CHECK constraints]
+- Default Value: [if any]
+- Description: [what this column represents]
+
+**Relationships:**
+For EVERY relationship:
+- Related Table: [exact table name]
+- Relationship Type: [one-to-one, one-to-many, many-to-many]
+- Foreign Key: [column name in this table]
+- Referenced Key: [column name in related table]
+- Cascade Rules: [ON DELETE, ON UPDATE behavior if specified]
+
+**Indexes:**
+- Primary Key: [columns]
+- Foreign Keys: [columns and referenced tables]
+- Indexes: [any other indexes mentioned]
+
+**Business Rules:**
+- Validation Rules: [constraints on data values]
+- Calculation Rules: [derived/computed columns]
+- Lifecycle: [when records are created/updated/archive]
+
+**Usage/Dependencies:**
+- Functionalities that READ this table: [EXACT function names/IDs]
+- Functionalities that WRITE to this table: [EXACT function names/IDs]
+- Referenced By: [other tables with foreign keys to this table]
+- References: [tables this table has foreign keys to]
+
+---
+
+**PRESERVE EXACTLY:**
+- All function/table IDs and codes (e.g., TES202, UC-401, TB_USER)
+- All cross-references in their original format
+- All field names exactly as written
+- All data types with precision
+- All validation rules and constraints
+- All relationship descriptions
+
+**DO NOT:**
+- Summarize or omit any fields
+- Paraphrase technical terms
+- Skip validation rules or constraints
+- Generalize specific references
+
+Partial Document Text:
+{node['text']}
+
+Generate the detailed technical summary now:"""
+
+    # Count input tokens
+    input_tokens = count_tokens(prompt, model)
+    
+    # Make API call
     response = await ChatGPT_API_async(model, prompt)
+    
+    # Count output tokens
+    output_tokens = count_tokens(response, model)
+    
+    # Store token counts in node
+    node['token_usage'] = {
+        'input_tokens': input_tokens,
+        'output_tokens': output_tokens,
+        'total_tokens': input_tokens + output_tokens
+    }
+    
+    # Log token usage
+    #print(f"[Token Usage] Node: {node.get('title', 'Unknown')} | Input: {input_tokens} | Output: {output_tokens} | Total: {input_tokens + output_tokens}")
+    
     return response
 
 
-async def generate_summaries_for_structure(structure, model=None):
+async def generate_summaries_for_structure(structure, model=None, max_concurrent=50):
     nodes = structure_to_list(structure)
-    tasks = [generate_node_summary(node, model=model) for node in nodes]
+    
+    # Create semaphore to limit concurrent requests
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def limited_summary(node):
+        async with semaphore:
+            return await generate_node_summary(node, model=model)
+    
+    # Run with concurrency limit
+    tasks = [limited_summary(node) for node in nodes]
     summaries = await asyncio.gather(*tasks)
     
     for node, summary in zip(nodes, summaries):
         node['summary'] = summary
+    
+    # Calculate total token usage
+    total_input = sum(node.get('token_usage', {}).get('input_tokens', 0) for node in nodes)
+    total_output = sum(node.get('token_usage', {}).get('output_tokens', 0) for node in nodes)
+    total_tokens = total_input + total_output
+    
+    # Save to JSON file instead of printing
+    token_report = {
+        'timestamp': datetime.now().isoformat(),
+        'summary': {
+            'total_input_tokens': total_input,
+            'total_output_tokens': total_output,
+            'total_tokens': total_tokens,
+            'node_count': len(nodes),
+            'average_tokens_per_node': total_tokens // len(nodes) if len(nodes) > 0 else 0
+        },
+        'per_node_usage': [
+            {
+                'node_id': node.get('node_id'),
+                'title': node.get('title'),
+                'input_tokens': node.get('token_usage', {}).get('input_tokens', 0),
+                'output_tokens': node.get('token_usage', {}).get('output_tokens', 0),
+                'total_tokens': node.get('token_usage', {}).get('total_tokens', 0)
+            }
+            for node in nodes if node.get('token_usage')
+        ]
+    }
+    
+    # Save to root directory
+    token_file = 'token_usage_report.json'
+    with open(token_file, 'w', encoding='utf-8') as f:
+        json.dump(token_report, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n✓ Token usage saved to: {token_file}")
+    print(f"  Total tokens: {total_tokens:,} ({len(nodes)} nodes)\n")
+    
     return structure
-
 
 def create_clean_structure_for_description(structure):
     """
