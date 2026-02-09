@@ -991,7 +991,14 @@ async def meta_processor(page_list, mode=None, toc_content=None, toc_page_list=N
         elif mode == 'process_toc_no_page_numbers':
             return await meta_processor(page_list, mode='process_no_toc', start_index=start_index, opt=opt, logger=logger)
         else:
-            raise Exception('Processing failed')
+            # Last resort: return best-effort results even if accuracy is low
+            logger.info(f"Warning: Low accuracy ({accuracy*100:.2f}%) - returning best-effort results")
+            if accuracy > 0.3 and len(incorrect_results) > 0:
+                # Try to fix what we can
+                toc_with_page_number, incorrect_results = await fix_incorrect_toc_with_retries(
+                    toc_with_page_number, page_list, incorrect_results,
+                    start_index=start_index, max_attempts=3, model=opt.model, logger=logger)
+            return toc_with_page_number
         
  
 async def process_large_node_recursively(node, page_list, opt=None, logger=None):
