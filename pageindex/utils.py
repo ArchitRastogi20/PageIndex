@@ -73,10 +73,15 @@ def extract_table_references(text):
     exclude = {'ID_', 'XML_', 'JSON_', 'HTTP_', 'API_', 'URL_'}
     filtered = [m for m in matches if not any(m.startswith(e) for e in exclude)]
     return list(set(filtered))
+
 def count_tokens(text, model=None):
     if not text:
         return 0
-    enc = tiktoken.encoding_for_model(model)
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except KeyError:
+        # Fallback for unknown models (gpt-5.1, gpt-5-nano, etc.)
+        enc = tiktoken.get_encoding("o200k_base")
     tokens = enc.encode(text)
     return len(tokens)
 
@@ -84,9 +89,9 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_
     max_retries = 10
     client = openai.OpenAI(api_key=api_key)
     
-    # GPT-5-nano only supports temperature=1 (default)
+    # gpt-5.1 only supports temperature=1 (default)
     kwargs = {"model": model, "messages": []}
-    if "gpt-5-nano" not in model.lower():
+    if "gpt-5.1" not in model.lower():
         kwargs["temperature"] = 0
     
     for i in range(max_retries):
@@ -119,9 +124,9 @@ def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
     max_retries = 10
     client = openai.OpenAI(api_key=api_key)
     
-    # GPT-5-nano only supports temperature=1 (default)
+    # gpt-5.1 only supports temperature=1 (default)
     kwargs = {"model": model, "messages": []}
-    if "gpt-5-nano" not in model.lower():
+    if "gpt-5.1" not in model.lower():
         kwargs["temperature"] = 0
     
     for i in range(max_retries):
@@ -150,9 +155,9 @@ async def ChatGPT_API_async(model, prompt, api_key=CHATGPT_API_KEY):
     max_retries = 10
     messages = [{"role": "user", "content": prompt}]
     
-    # GPT-5-nano only supports temperature=1 (default)
+    # gpt-5.1 only supports temperature=1 (default)
     kwargs = {"model": model, "messages": messages}
-    if "gpt-5-nano" not in model.lower():
+    if "gpt-5.1" not in model.lower():
         kwargs["temperature"] = 0
     
     for i in range(max_retries):
