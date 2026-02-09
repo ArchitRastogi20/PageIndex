@@ -29,6 +29,12 @@ def count_tokens(text, model=None):
 def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
     max_retries = 10
     client = openai.OpenAI(api_key=api_key)
+    
+    # GPT-5-nano only supports temperature=1 (default)
+    kwargs = {"model": model, "messages": []}
+    if "gpt-5-nano" not in model.lower():
+        kwargs["temperature"] = 0
+    
     for i in range(max_retries):
         try:
             if chat_history:
@@ -37,11 +43,9 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_
             else:
                 messages = [{"role": "user", "content": prompt}]
             
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0,
-            )
+            kwargs["messages"] = messages
+            response = client.chat.completions.create(**kwargs)
+            
             if response.choices[0].finish_reason == "length":
                 return response.choices[0].message.content, "max_output_reached"
             else:
@@ -51,16 +55,21 @@ def ChatGPT_API_with_finish_reason(model, prompt, api_key=CHATGPT_API_KEY, chat_
             print('************* Retrying *************')
             logging.error(f"Error: {e}")
             if i < max_retries - 1:
-                time.sleep(1)  # Wait for 1秒 before retrying
+                time.sleep(1)
             else:
                 logging.error('Max retries reached for prompt: ' + prompt)
                 return "Error"
 
 
-
 def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
     max_retries = 10
     client = openai.OpenAI(api_key=api_key)
+    
+    # GPT-5-nano only supports temperature=1 (default)
+    kwargs = {"model": model, "messages": []}
+    if "gpt-5-nano" not in model.lower():
+        kwargs["temperature"] = 0
+    
     for i in range(max_retries):
         try:
             if chat_history:
@@ -69,44 +78,42 @@ def ChatGPT_API(model, prompt, api_key=CHATGPT_API_KEY, chat_history=None):
             else:
                 messages = [{"role": "user", "content": prompt}]
             
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0,
-            )
+            kwargs["messages"] = messages
+            response = client.chat.completions.create(**kwargs)
    
             return response.choices[0].message.content
         except Exception as e:
             print('************* Retrying *************')
             logging.error(f"Error: {e}")
             if i < max_retries - 1:
-                time.sleep(1)  # Wait for 1秒 before retrying
+                time.sleep(1)
             else:
                 logging.error('Max retries reached for prompt: ' + prompt)
                 return "Error"
-            
+
 
 async def ChatGPT_API_async(model, prompt, api_key=CHATGPT_API_KEY):
     max_retries = 10
     messages = [{"role": "user", "content": prompt}]
+    
+    # GPT-5-nano only supports temperature=1 (default)
+    kwargs = {"model": model, "messages": messages}
+    if "gpt-5-nano" not in model.lower():
+        kwargs["temperature"] = 0
+    
     for i in range(max_retries):
         try:
             async with openai.AsyncOpenAI(api_key=api_key) as client:
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0,
-                )
+                response = await client.chat.completions.create(**kwargs)
                 return response.choices[0].message.content
         except Exception as e:
             print('************* Retrying *************')
             logging.error(f"Error: {e}")
             if i < max_retries - 1:
-                await asyncio.sleep(1)  # Wait for 1s before retrying
+                await asyncio.sleep(1)
             else:
                 logging.error('Max retries reached for prompt: ' + prompt)
-                return "Error"  
-            
+                return "Error"
             
 def get_json_content(response):
     start_idx = response.find("```json")
